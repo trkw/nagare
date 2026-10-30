@@ -12,12 +12,13 @@ iOS・iPadOS・macOS版は [nagare-apple](https://github.com/trkw/nagare-apple)�
 | `/api/*` | アプリ・Web用のREST API |
 | `/mcp` | エージェント用のMCPサーバー（Streamable HTTP、ステートレス） |
 | Cron（15分ごと） | 更新時刻が来たRSSフィードを巡回 |
+| それ以外 | Web版（`apps/web` のビルド結果を静的配信） |
 
 データは D1（SQLite）に保存します。スキーマは `apps/api/migrations/` にあります。
 
 ```
 apps/api   Worker（API・MCP・巡回）
-apps/web   Web版（React＋Vite、これから作成）
+apps/web   Web版（React＋Vite）
 ```
 
 ## 開発
@@ -33,6 +34,10 @@ bun test
 bun run typecheck
 ```
 
+Web版は別のターミナルで `bun run dev:web`（http://localhost:5173、`/api` は8787に転送）。
+Workerから配信される形で確かめるときは `bun run build` のあと http://localhost:8787 を開きます。
+ログイン画面ではアプリ用トークンを入力します（ブラウザに保存）。キー操作は j / k（移動）、s（あとで読む）、m（既読/未読）、v（元の記事）、r（再読み込み）。
+
 Cronは `curl "http://localhost:8787/__scheduled?cron=*/15+*+*+*+*"` で手動実行できます。
 
 ## デプロイ（初回）
@@ -42,7 +47,7 @@ cd apps/api
 bunx wrangler login
 bunx wrangler d1 create nagare      # 表示された database_id を wrangler.jsonc に書く
 bun run db:migrate:remote
-bun run deploy                      # nagare.trkw.dev にカスタムドメインで公開
+bun run deploy                      # Web版をビルドして nagare.trkw.dev に公開
 bun run token:create --name me --kind app --remote
 bun run token:create --name grokbot --kind agent --remote
 ```

@@ -13,6 +13,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Web版（apps/web）のビルド結果。/api・/mcp・/health 以外はSPAとして返す
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/mcp", "/health"]
+  },
   "triggers": { "crons": ["*/15 * * * *"] },
   "observability": { "enabled": true }
 }
