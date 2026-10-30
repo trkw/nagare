@@ -321,6 +321,7 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
         {selected ? (
           <Article
             entry={selected}
+            onContent={(content) => patchEntry(selected.id, { content })}
             onBack={() => setSelected(null)}
             onToggleStar={() => toggleStar(selected)}
             onToggleRead={() => setRead(selected, !selected.read)}

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "mkdir -p ../web/dist && wrangler dev --test-scheduled",
+    "dev": "mkdir -p ../web/dist && wrangler dev --local --test-scheduled",
     "deploy": "bun run --cwd ../web build && wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply nagare --local",
     "db:migrate:remote": "wrangler d1 migrations apply nagare --remote",
@@ -12,8 +12,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@mozilla/readability": "^0.6.0",
     "fast-xml-parser": "^5.11.2",
-    "hono": "^4.13.14"
+    "hono": "^4.13.14",
+    "linkedom": "^0.18.14"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261030.1",

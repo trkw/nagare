@@ -2,6 +2,8 @@ import { requireScope } from "../auth";
 import type { Caller, Env } from "../env";
 import { HttpError } from "../env";
 import { discoverFeeds } from "../feed/discover";
+import { fetchFullText } from "../feed/fulltext";
+import { translateEntry } from "../translate";
 import * as svc from "../service";
 
 export type ToolContext = { env: Env; caller: Caller };
@@ -199,11 +201,43 @@ export const tools: Tool[] = [
   },
   {
     name: "get_entry",
-    description: "Get one entry with its full content.",
-    inputSchema: { type: "object", properties: { entry_id: int }, required: ["entry_id"] },
+    description:
+      "Get one entry with its content. Set full_text to fetch the whole article from its page when the feed " +
+      "only carries a summary (stored for later reads).",
+    inputSchema: {
+      type: "object",
+      properties: { entry_id: int, full_text: { type: "boolean" } },
+      required: ["entry_id"],
+    },
     async run({ env, caller }, args) {
       requireScope(caller, "read");
-      return svc.getEntry(env.DB, need<number>(args, "entry_id", "number"));
+      const id = need<number>(args, "entry_id", "number");
+      let fullTextError: string | undefined;
+      if (args.full_text === true) {
+        requireScope(caller, "write");
+        // On failure fall back to the feed content and say why.
+        await fetchFullText(env, id).catch((e: Error) => {
+          if (!(e instanceof HttpError)) throw e;
+          fullTextError = e.message;
+        });
+      }
+      const entry = await svc.getEntry(env.DB, id);
+      return fullTextError ? { ...entry, full_text_error: fullTextError } : entry;
+    },
+  },
+  {
+    name: "translate_entry",
+    description: "Translate an entry (title and content) into a language, Japanese by default. Results are cached.",
+    inputSchema: {
+      type: "object",
+      properties: { entry_id: int, lang: { type: "string", description: "Two-letter code, default ja" } },
+      required: ["entry_id"],
+    },
+    async run({ env, caller }, args) {
+      requireScope(caller, "read");
+      const lang = opt(args, "lang") ?? "ja";
+      if (!/^[a-z]{2}$/.test(lang)) throw new HttpError(400, '"lang" must be a two-letter code');
+      return translateEntry(env, need<number>(args, "entry_id", "number"), lang);
     },
   },
   {
