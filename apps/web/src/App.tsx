@@ -431,7 +431,8 @@ function SubscribeForm(props: { credentials: Credential[]; onDone: (feed: Feed) 
     }
   }
 
-  const opts = { credential: credential || undefined };
+  // Only a login for the current host is sent; a choice left over from another URL is dropped.
+  const opts = { credential: usable.some((c) => c.name === credential) ? credential : undefined };
   return (
     <form
       className="subscribe"
