@@ -51,6 +51,7 @@ const entryForAgent = (e: svc.EntryView) => ({
   url: e.url,
   author: e.author,
   published_at: new Date(e.published_at).toISOString(),
+  published_at_ms: e.published_at,
   read: !!e.read,
   starred: !!e.starred,
   preview: preview(e.content),
@@ -166,7 +167,9 @@ export const tools: Tool[] = [
   },
   {
     name: "get_entries",
-    description: "Get recent entries, newest first, with a short text preview. Use get_entry for the full text.",
+    description:
+      "Get recent entries, newest first, with a short text preview. Use get_entry for the full text. " +
+      "For the next page pass the last entry's published_at_ms as before and its id as before_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -174,7 +177,8 @@ export const tools: Tool[] = [
         folder: str,
         unread_only: { type: "boolean" },
         starred_only: { type: "boolean" },
-        before: { type: "integer", description: "Only entries published before this unix ms timestamp (paging)" },
+        before: { type: "integer", description: "Paging: published_at of the last entry you got (unix ms)" },
+        before_id: { type: "integer", description: "Paging: id of the last entry you got" },
         limit: { type: "integer", minimum: 1, maximum: 100 },
       },
     },
@@ -186,6 +190,7 @@ export const tools: Tool[] = [
         unread: args.unread_only === true,
         starred: args.starred_only === true,
         before: Number.isInteger(args.before) ? (args.before as number) : undefined,
+        beforeId: Number.isInteger(args.before_id) ? (args.before_id as number) : undefined,
         limit: Math.min(Number.isInteger(args.limit) ? (args.limit as number) : 20, 100),
         withContent: true,
       });

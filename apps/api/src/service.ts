@@ -196,8 +196,9 @@ export type EntryFilter = {
   unread?: boolean;
   starred?: boolean;
   q?: string;
+  /** Cursor: entries older than (before, beforeId) in the list order. */
   before?: number;
-  since?: number;
+  beforeId?: number;
   limit?: number;
   withContent?: boolean;
 };
@@ -221,8 +222,15 @@ export async function listEntries(db: D1Database, f: EntryFilter): Promise<Entry
   if (f.folder) where.push("fo.name = ?"), args.push(f.folder);
   if (f.unread) where.push("COALESCE(st.read, 0) = 0");
   if (f.starred) where.push("COALESCE(st.starred, 0) = 1");
-  if (f.before != null) where.push("e.published_at < ?"), args.push(f.before);
-  if (f.since != null) where.push("e.created_at > ?"), args.push(f.since);
+  if (f.before != null) {
+    if (f.beforeId != null) {
+      where.push("(e.published_at < ? OR (e.published_at = ? AND e.id < ?))");
+      args.push(f.before, f.before, f.beforeId);
+    } else {
+      where.push("e.published_at < ?");
+      args.push(f.before);
+    }
+  }
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 200);
 
   const { results } = await db
@@ -236,7 +244,7 @@ export async function listEntries(db: D1Database, f: EntryFilter): Promise<Entry
        LEFT JOIN folders fo ON fo.id = s.folder_id
        LEFT JOIN entry_states st ON st.entry_id = e.id
        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-       ORDER BY e.published_at DESC LIMIT ${limit}`,
+       ORDER BY e.published_at DESC, e.id DESC LIMIT ${limit}`,
     )
     .bind(...args)
     .all<EntryView>();
@@ -274,10 +282,12 @@ export async function setEntryState(
     ids.map((id) =>
       db
         .prepare(
-          `INSERT INTO entry_states (entry_id, read, starred, updated_at)
-           SELECT id, COALESCE(?1, 0), COALESCE(?2, 0), ?3 FROM entries WHERE id = ?4
+          `INSERT INTO entry_states (entry_id, read, starred, version, updated_at)
+           SELECT id, COALESCE(?1, 0), COALESCE(?2, 0), (SELECT COALESCE(MAX(version), 0) + 1 FROM entry_states), ?3
+           FROM entries WHERE id = ?4
            ON CONFLICT (entry_id) DO UPDATE SET
-             read = COALESCE(?1, read), starred = COALESCE(?2, starred), updated_at = ?3`,
+             read = COALESCE(?1, read), starred = COALESCE(?2, starred),
+             version = excluded.version, updated_at = ?3`,
         )
         .bind(read, starred, now, id),
     ),
@@ -285,18 +295,49 @@ export async function setEntryState(
   return { updated: results.reduce((n, r) => n + (r.meta.changes ?? 0), 0) };
 }
 
-/** Everything a client needs to catch up since its last sync. */
-export async function sync(db: D1Database, since: number) {
-  const serverTime = Date.now();
+const SYNC_ENTRIES = 200;
+const SYNC_STATES = 1000;
+
+/** Sync cursor "<last entry id>.<last state version>"; empty means from the start. */
+export function parseSyncCursor(cursor: string | undefined): { entry: number; version: number } {
+  if (!cursor) return { entry: 0, version: 0 };
+  const m = cursor.match(/^(\d+)\.(\d+)$/);
+  if (!m) throw new HttpError(400, `invalid sync cursor: ${cursor}`);
+  return { entry: Number(m[1]), version: Number(m[2]) };
+}
+
+/**
+ * Changes since the cursor, oldest first. Call again with the returned cursor while
+ * has_more is true; keep the last cursor for the next sync.
+ */
+export async function sync(db: D1Database, cursor: string | undefined) {
+  const from = parseSyncCursor(cursor);
   const [feeds, entries, states] = await Promise.all([
     listFeeds(db),
-    listEntries(db, { since, limit: 200, withContent: true }),
     db
-      .prepare("SELECT entry_id, read, starred, updated_at FROM entry_states WHERE updated_at > ? ORDER BY updated_at LIMIT 5000")
-      .bind(since)
-      .all(),
+      .prepare(
+        `SELECT e.id, e.feed_id, fd.title AS feed_title, e.url, e.title, e.author,
+           COALESCE(e.full_content, e.content) AS content, e.published_at,
+           COALESCE(st.read, 0) AS read, COALESCE(st.starred, 0) AS starred
+         FROM entries e JOIN feeds fd ON fd.id = e.feed_id LEFT JOIN entry_states st ON st.entry_id = e.id
+         WHERE e.id > ? ORDER BY e.id LIMIT ?`,
+      )
+      .bind(from.entry, SYNC_ENTRIES)
+      .all<EntryView>(),
+    db
+      .prepare("SELECT entry_id, read, starred, version FROM entry_states WHERE version > ? ORDER BY version LIMIT ?")
+      .bind(from.version, SYNC_STATES)
+      .all<{ entry_id: number; read: number; starred: number; version: number }>(),
   ]);
-  return { server_time: serverTime, feeds, entries, states: states.results, has_more: entries.length === 200 };
+  const lastEntry = entries.results.at(-1)?.id ?? from.entry;
+  const lastVersion = states.results.at(-1)?.version ?? from.version;
+  return {
+    feeds,
+    entries: entries.results,
+    states: states.results,
+    cursor: `${lastEntry}.${lastVersion}`,
+    has_more: entries.results.length === SYNC_ENTRIES || states.results.length === SYNC_STATES,
+  };
 }
 
 export async function createHandoff(
@@ -322,26 +363,24 @@ export async function createHandoff(
   return { id: row!.id };
 }
 
-/** Pending handoffs for an agent, with their entries; marks them picked up. */
+/** Pending handoffs for an agent, with their entries. Claimed atomically, so each is delivered once. */
 export async function takeHandoffs(db: D1Database, caller: Caller) {
   requireScope(caller, "read");
   const { results } = await db
     .prepare(
-      `SELECT id, entry_ids, note, created_at FROM handoffs
-       WHERE picked_up_at IS NULL AND (to_agent IS NULL OR to_agent = ?) ORDER BY created_at LIMIT 20`,
+      `UPDATE handoffs SET picked_up_at = ?1
+       WHERE id IN (SELECT id FROM handoffs
+                    WHERE picked_up_at IS NULL AND (to_agent IS NULL OR to_agent = ?2) ORDER BY created_at LIMIT 20)
+         AND picked_up_at IS NULL
+       RETURNING id, entry_ids, note, created_at`,
     )
-    .bind(caller.id)
+    .bind(Date.now(), caller.id)
     .all<{ id: number; entry_ids: string; note: string | null; created_at: number }>();
   const out = [];
-  for (const h of results) {
+  for (const h of results.sort((a, b) => a.created_at - b.created_at)) {
     const ids = JSON.parse(h.entry_ids) as number[];
     const entries = await Promise.all(ids.map((id) => getEntry(db, id).catch(() => null)));
     out.push({ id: h.id, note: h.note, created_at: h.created_at, entries: entries.filter((e) => e != null) });
-  }
-  if (results.length) {
-    await db.batch(
-      results.map((h) => db.prepare("UPDATE handoffs SET picked_up_at = ? WHERE id = ?").bind(Date.now(), h.id)),
-    );
   }
   return out;
 }

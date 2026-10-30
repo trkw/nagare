@@ -36,6 +36,8 @@ export function parseOpml(body: string): OpmlFeed[] {
 /** Adds every feed in the OPML; they are fetched by the next cron run. */
 export async function importOpml(db: D1Database, caller: Caller, body: string): Promise<{ added: number; skipped: number }> {
   requireScope(caller, "subscribe");
+  // Bulk import bypasses the per-agent feed cap, so it is for the owner's apps only.
+  if (caller.kind !== "app") throw new HttpError(403, "OPML import needs an app token");
   const feeds = parseOpml(body);
   const now = Date.now();
   let added = 0;

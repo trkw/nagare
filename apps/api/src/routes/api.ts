@@ -87,6 +87,7 @@ api.get("/entries", async (c) => {
       starred: q.starred === "1" || q.starred === "true",
       q: q.q,
       before: int(q.before),
+      beforeId: int(q.before_id),
       limit: int(q.limit),
       withContent: q.content === "1" || q.content === "true",
     }),
@@ -106,7 +107,7 @@ api.post("/entries/state", async (c) => {
 
 api.get("/sync", async (c) => {
   requireScope(c.get("caller"), "read");
-  return c.json(await svc.sync(c.env.DB, int(c.req.query("since")) ?? 0));
+  return c.json(await svc.sync(c.env.DB, c.req.query("cursor")));
 });
 
 api.post("/handoffs", async (c) => {

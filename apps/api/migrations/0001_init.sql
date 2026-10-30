@@ -53,7 +53,7 @@ CREATE TABLE subscriptions (
 );
 
 CREATE TABLE entries (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,  -- never reused, so sync can page by id
   feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
   guid TEXT NOT NULL,
   url TEXT,
@@ -88,9 +88,10 @@ CREATE TABLE entry_states (
   entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
   read INTEGER NOT NULL DEFAULT 0,
   starred INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL,          -- increases on every change; sync pages by it
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX entry_states_updated ON entry_states (updated_at);
+CREATE INDEX entry_states_version ON entry_states (version);
 
 CREATE TABLE translations (
   entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
