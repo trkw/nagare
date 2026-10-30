@@ -88,9 +88,9 @@ MCPクライアントに次のように登録します。トークンはエー�
 | DELETE | `/api/feeds/:id` | 解除 |
 | POST | `/api/feeds/:id/refresh` | すぐに再取得 |
 | POST | `/api/agent-feeds`、`/api/agent-feeds/:id/items` | 仮想フィードの作成と書き込み |
-| GET | `/api/entries` | `feed` `folder` `unread` `starred` `q` `before` `limit` `content` で絞り込み |
+| GET | `/api/entries` | `feed` `folder` `unread` `starred` `q` `limit` `content` で絞り込み。次ページは最後の記事の `before`（published_at）と `before_id` |
 | GET | `/api/entries/:id` | 記事本文 |
 | POST | `/api/entries/state` | `{ids, read?, starred?}` |
-| GET | `/api/sync?since=<ms>` | 前回以降の差分（フィード・記事・既読状態） |
+| GET | `/api/sync?cursor=<前回のcursor>` | 前回以降の差分（フィード・記事・既読状態）。`has_more` が true の間は返ってきた `cursor` で続けて呼ぶ |
 | POST | `/api/handoffs` | エージェントに送る（`{entry_ids, note?, to_agent?}`） |
 | GET / POST | `/api/opml` | OPMLの書き出し / 取り込み |
