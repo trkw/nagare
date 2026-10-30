@@ -22,5 +22,13 @@
   // 翻訳の既定エンジン。ANTHROPIC_API_KEY（wrangler secret put）があればClaudeを使う
   "ai": { "binding": "AI" },
   "triggers": { "crons": ["*/15 * * * *"] },
+  // プッシュ通知の公開設定。秘密の鍵（VAPID_PRIVATE_KEY、APNS_KEY、FCM_SERVICE_ACCOUNT）は wrangler secret put で入れる
+  "vars": {
+    "VAPID_PUBLIC_KEY": "",
+    "VAPID_SUBJECT": "https://nagare.trkw.dev",
+    "APNS_KEY_ID": "",
+    "APNS_TEAM_ID": "",
+    "APNS_TOPIC": "dev.trkw.nagare"
+  },
   "observability": { "enabled": true }
 }

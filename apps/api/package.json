@@ -9,7 +9,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply nagare --remote",
     "token:create": "bun scripts/create-token.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "push:vapid": "bun scripts/vapid.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

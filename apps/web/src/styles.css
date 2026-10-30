@@ -430,6 +430,14 @@ textarea {
 .sidebar-footer {
   margin-top: 16px;
   padding: 0 8px;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.push-toggle {
+  display: flex;
+  gap: 10px;
 }
 
 .sidebar-footer .link {

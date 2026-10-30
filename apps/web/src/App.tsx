@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, getToken, setToken, type Credential, type Entry, type Feed, type Me } from "./api";
 import { Article } from "./Article";
+import { PushToggle } from "./Push";
 import { CredentialsPanel, FeedSettings } from "./Settings";
 
 type View = { kind: "all" } | { kind: "starred" } | { kind: "folder"; name: string } | { kind: "feed"; id: number };
@@ -169,6 +170,32 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
     [setRead],
   );
 
+  // A clicked notification opens its entry: via ?entry= on a fresh page, or a message from the service worker.
+  const openById = useCallback(
+    async (id: number) => {
+      try {
+        open(await api.entry(id));
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [open],
+  );
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const id = Number(params.get("entry"));
+    if (id) {
+      openById(id);
+      history.replaceState(null, "", location.pathname);
+    }
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === "open-entry" && e.data.entry_id) openById(Number(e.data.entry_id));
+    };
+    navigator.serviceWorker?.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
+  }, [openById]);
+
   const move = useCallback(
     (delta: number) => {
       const i = selected ? entries.findIndex((e) => e.id === selected.id) : -1;
@@ -184,7 +211,7 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if ((e.target as HTMLElement).closest("input, textarea")) return;
+      if ((e.target as HTMLElement).closest("input, textarea, select")) return;
       if (e.key === "j") move(1);
       else if (e.key === "k") move(-1);
       else if (e.key === "s" && selected) toggleStar(selected);
@@ -269,6 +296,7 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
         />
         {me.kind === "app" && (
           <div className="sidebar-footer">
+            <PushToggle onError={setError} />
             <button className="link" onClick={() => setDialog("credentials")}>
               ログイン情報（パスワード付きフィード用）
             </button>

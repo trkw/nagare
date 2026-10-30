@@ -4,8 +4,9 @@ import type { Caller, Env } from "./env";
 import { HttpError } from "./env";
 import { discoverFeeds, USER_AGENT, type FetchLike } from "./feed/discover";
 import type { ParsedItem } from "./feed/parse";
-import { countInserted, fetchableFeed, insertItemsStatements, refreshFeed } from "./feed/refresh";
+import { fetchableFeed, insertedIds, insertItemsStatements, refreshFeed } from "./feed/refresh";
 import { extractWebItems } from "./feed/web";
+import { notifyNewEntries } from "./push";
 
 // Shared by the REST API and the MCP server so both behave the same.
 
@@ -277,7 +278,8 @@ export type ItemInput = {
   published_at?: string | number;
 };
 
-export async function addItems(db: D1Database, caller: Caller, feedId: number, items: ItemInput[]): Promise<{ added: number }> {
+export async function addItems(env: Env, caller: Caller, feedId: number, items: ItemInput[]): Promise<{ added: number }> {
+  const db = env.DB;
   requireScope(caller, "write");
   const feed = await ownedFeed(db, caller, feedId);
   if (feed.kind !== "agent") throw new HttpError(409, `feed ${feedId} is not an agent feed`);
@@ -297,8 +299,9 @@ export async function addItems(db: D1Database, caller: Caller, feedId: number, i
       publishedAt: Number.isNaN(published) ? now : published,
     };
   });
-  const results = await db.batch(insertItemsStatements(db, feedId, parsed, now));
-  return { added: countInserted(results) };
+  const ids = insertedIds(await db.batch(insertItemsStatements(db, feedId, parsed, now)));
+  await notifyNewEntries(env, feedId, ids).catch((e) => console.error("push failed", e));
+  return { added: ids.length };
 }
 
 export type EntryView = {

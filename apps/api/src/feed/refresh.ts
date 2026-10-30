@@ -1,5 +1,6 @@
 import { loadCredential, withCredential } from "../credentials";
 import type { Env } from "../env";
+import { notifyNewEntries } from "../push";
 import { USER_AGENT, type FetchLike } from "./discover";
 import { parseFeed, type ParsedItem } from "./parse";
 import { extractWebItems } from "./web";
@@ -9,6 +10,11 @@ const MAX_INTERVAL = 24 * 60 * 60_000;
 // Workers allow 6 open connections at a time and 50 subrequests per invocation on the free plan.
 const CONCURRENCY = 6;
 const PER_RUN = 40;
+
+/** Ids from insertItemsStatements results, i.e. the entries that were actually new. */
+export function insertedIds(results: D1Result[]): number[] {
+  return results.flatMap((r) => (r.results as { id: number }[]).map((row) => row.id));
+}
 
 export type FeedRow = {
   id: number;
@@ -43,13 +49,16 @@ export function insertItemsStatements(db: D1Database, feedId: number, items: Par
   );
 }
 
-/** Counts rows from insertItemsStatements; meta.changes would also count the FTS trigger writes. */
-export function countInserted(results: D1Result[]): number {
-  return results.reduce((n, r) => n + r.results.length, 0);
-}
-
-/** Fetches one feed or watched page, stores new entries and schedules the next fetch. Returns the number of new entries. */
-export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = fetch): Promise<number> {
+/**
+ * Fetches one feed or watched page, stores new entries and schedules the next fetch. Returns the number of
+ * new entries. With notify, a feed that has notifications on pushes its new entries to the owner's devices.
+ */
+export async function refreshFeed(
+  env: Env,
+  feed: FeedRow,
+  fetcher: FetchLike = fetch,
+  opts: { notify?: boolean } = {},
+): Promise<number> {
   const now = Date.now();
   const headers: Record<string, string> = { "user-agent": USER_AGENT };
   if (feed.etag) headers["if-none-match"] = feed.etag;
@@ -91,7 +100,12 @@ export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = 
         feed.id,
       ),
     ]);
-    return countInserted(results.slice(0, -1));
+    const ids = insertedIds(results.slice(0, -1));
+    if (opts.notify && ids.length > 0) {
+      // A push failure is recorded on the device, never on the feed.
+      await notifyNewEntries(env, feed.id, ids).catch((e) => console.error("push failed", e));
+    }
+    return ids.length;
   } catch (e) {
     const errors = feed.error_count + 1;
     await env.DB.prepare(
@@ -115,7 +129,7 @@ export async function refreshDueFeeds(env: Env, fetcher: FetchLike = fetch): Pro
   let added = 0;
   let failed = 0;
   for (let i = 0; i < due.length; i += CONCURRENCY) {
-    const settled = await Promise.allSettled(due.slice(i, i + CONCURRENCY).map((f) => refreshFeed(env, f, fetcher)));
+    const settled = await Promise.allSettled(due.slice(i, i + CONCURRENCY).map((f) => refreshFeed(env, f, fetcher, { notify: true })));
     for (const s of settled) {
       if (s.status === "fulfilled") added += s.value;
       else failed++;

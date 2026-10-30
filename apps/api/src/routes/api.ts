@@ -5,6 +5,7 @@ import { HttpError } from "../env";
 import { createCredential, deleteCredential, listCredentials } from "../credentials";
 import { fetchFullText } from "../feed/fulltext";
 import { fetchableFeed, refreshFeed } from "../feed/refresh";
+import { deleteTarget, listTargets, pushConfig, registerTarget, sendNotification, type TargetInput } from "../push";
 import { translateEntry } from "../translate";
 import { exportOpml, importOpml } from "../opml";
 import * as svc from "../service";
@@ -100,7 +101,7 @@ api.post("/agent-feeds", async (c) => {
 
 api.post("/agent-feeds/:id/items", async (c) => {
   const body = await json<{ items: svc.ItemInput[] }>(c.req.raw);
-  return c.json(await svc.addItems(c.env.DB, c.get("caller"), int(c.req.param("id"))!, body.items ?? []));
+  return c.json(await svc.addItems(c.env, c.get("caller"), int(c.req.param("id"))!, body.items ?? []));
 });
 
 api.get("/entries", async (c) => {
@@ -160,4 +161,36 @@ api.post("/opml", async (c) => c.json(await importOpml(c.env.DB, c.get("caller")
 api.get("/opml", async (c) => {
   requireScope(c.get("caller"), "read");
   return c.body(await exportOpml(c.env.DB), 200, { "content-type": "text/x-opml; charset=utf-8" });
+});
+
+api.get("/push/config", (c) => c.json(pushConfig(c.env)));
+
+api.get("/push/targets", async (c) => {
+  requireScope(c.get("caller"), "read");
+  return c.json(await listTargets(c.env.DB));
+});
+
+api.post("/push/targets", async (c) => {
+  return c.json(await registerTarget(c.env.DB, c.get("caller"), await json<TargetInput>(c.req.raw)), 201);
+});
+
+api.delete("/push/targets", async (c) => {
+  const body = await json<{ id?: number; token?: string }>(c.req.raw);
+  await deleteTarget(c.env.DB, c.get("caller"), body);
+  return c.body(null, 204);
+});
+
+api.post("/push/test", async (c) => {
+  const caller = c.get("caller");
+  if (caller.kind !== "app") throw new HttpError(403, "test notifications need an app token");
+  return c.json(await sendNotification(c.env, { title: "Nagare", body: "通知のテストです", threadId: "test" }));
+});
+
+api.get("/notifications", async (c) => {
+  requireScope(c.get("caller"), "read");
+  const { results } = await c.env.DB.prepare(
+    `SELECT n.id, t.name AS source, n.title, n.body, n.url, n.entry_id, n.created_at
+     FROM notifications n LEFT JOIN tokens t ON t.id = n.source ORDER BY n.id DESC LIMIT 50`,
+  ).all();
+  return c.json(results);
 });
