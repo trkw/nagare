@@ -105,6 +105,11 @@ export const api = {
   unsubscribe: (id: number) => request<void>(`/feeds/${id}`, { method: "DELETE" }),
   entries: (q: EntryQuery) => request<Entry[]>(`/entries${qs(q)}`),
   entry: (id: number) => request<Entry>(`/entries/${id}`),
+  fullText: (id: number) => request<{ content: string }>(`/entries/${id}/fulltext`, { method: "POST" }),
+  translate: (id: number, lang = "ja") =>
+    request<{ title: string; content: string; engine: string; cached: boolean }>(`/entries/${id}/translate?lang=${lang}`, {
+      method: "POST",
+    }),
   setState: (ids: number[], state: { read?: boolean; starred?: boolean }) =>
     request<{ updated: number }>("/entries/state", { method: "POST", body: JSON.stringify({ ids, ...state }) }),
   handoff: (entryIds: number[], note: string, toAgent?: string) =>

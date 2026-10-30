@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { authenticate, requireScope } from "../auth";
 import type { Caller, Env } from "../env";
 import { HttpError } from "../env";
+import { fetchFullText } from "../feed/fulltext";
 import { refreshFeed } from "../feed/refresh";
+import { translateEntry } from "../translate";
 import { exportOpml, importOpml } from "../opml";
 import * as svc from "../service";
 
@@ -97,6 +99,19 @@ api.get("/entries", async (c) => {
 api.get("/entries/:id", async (c) => {
   requireScope(c.get("caller"), "read");
   return c.json(await svc.getEntry(c.env.DB, int(c.req.param("id"))!));
+});
+
+api.post("/entries/:id/fulltext", async (c) => {
+  requireScope(c.get("caller"), "write");
+  const id = int(c.req.param("id"))!;
+  return c.json({ content: await fetchFullText(c.env, id) });
+});
+
+api.post("/entries/:id/translate", async (c) => {
+  requireScope(c.get("caller"), "read");
+  const lang = c.req.query("lang") || "ja";
+  if (!/^[a-z]{2}$/.test(lang)) throw new HttpError(400, "lang must be a two-letter code");
+  return c.json(await translateEntry(c.env, int(c.req.param("id"))!, lang));
 });
 
 api.post("/entries/state", async (c) => {
