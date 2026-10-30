@@ -77,6 +77,27 @@ openssl rand -base64 32 | bunx wrangler secret put CREDENTIALS_KEY
 
 鍵を変えると保存済みのログイン情報は読めなくなるので、登録し直してください。
 
+## プッシュ通知
+
+フィードの設定で「新しい記事を通知する」をオンにすると、巡回やエージェントの書き込みで新着が入ったときに通知します（同じフィードの新着はまとめて1件）。エージェントは `notify` ツールで直接知らせることもできます（1時間に20件まで）。
+
+使う通知の種類だけ設定します。設定していない種類の端末には送りません。
+
+```sh
+cd apps/api
+# Web Push（ブラウザ）
+bun run push:vapid                      # 表示された公開鍵を wrangler.jsonc の VAPID_PUBLIC_KEY に書く
+bunx wrangler secret put VAPID_PRIVATE_KEY
+
+# iPhone・iPad・Mac（APNs）。Apple Developer で作った .p8 キー
+bunx wrangler secret put APNS_KEY < AuthKey_XXXXXXXXXX.p8   # キーIDとチームIDは wrangler.jsonc に書く
+
+# Android（FCM）。Firebase のサービスアカウントJSON
+bunx wrangler secret put FCM_SERVICE_ACCOUNT < service-account.json
+```
+
+Web版ではサイドバー下の「このブラウザで通知を受け取る」で登録し、「テスト」で届くか確かめられます。iPhoneのSafariでは、ホーム画面に追加したWebアプリでだけ通知を受け取れます。
+
 ## エージェントからの接続
 
 MCPクライアントに次のように登録します。トークンはエージェントごとに分けてください。
@@ -105,6 +126,7 @@ MCPクライアントに次のように登録します。トークンはエー�
 | `translate_entry` | 記事を翻訳（既定は日本語、結果はキャッシュ） |
 | `mark_read` / `star_entry` | 既読・スター |
 | `get_handoffs` | 「エージェントに送る」で渡された記事とメモを受け取る |
+| `notify` | 持ち主の端末にプッシュ通知を送る（1時間に20件まで） |
 
 エージェント用トークンは既定で100フィードまで登録できます（`--max-feeds` で変更）。
 
@@ -131,3 +153,7 @@ MCPクライアントに次のように登録します。トークンはエー�
 | GET | `/api/sync?cursor=<前回のcursor>` | 前回以降の差分（フィード・記事・既読状態）。`has_more` が true の間は返ってきた `cursor` で続けて呼ぶ |
 | POST | `/api/handoffs` | エージェントに送る（`{entry_ids, note?, to_agent?}`） |
 | GET / POST | `/api/opml` | OPMLの書き出し / 取り込み |
+| GET | `/api/push/config` | 設定済みの通知の種類と、Web Push用の公開鍵 |
+| GET / POST / DELETE | `/api/push/targets` | 通知を受け取る端末の一覧 / 登録（`{platform: apns\|fcm\|webpush, token, keys?, name?, sandbox?}`、アプリ用トークンのみ） / 解除（`{token}`） |
+| POST | `/api/push/test` | テスト通知 |
+| GET | `/api/notifications` | 送った通知の履歴（最新50件） |

@@ -2,6 +2,7 @@ import { requireScope } from "../auth";
 import type { Caller, Env } from "../env";
 import { listCredentials } from "../credentials";
 import { HttpError } from "../env";
+import { agentNotify } from "../push";
 import { discoverFeeds } from "../feed/discover";
 import { fetchFullText } from "../feed/fulltext";
 import { translateEntry } from "../translate";
@@ -210,7 +211,7 @@ export const tools: Tool[] = [
     async run({ env, caller }, args) {
       const items = args.items;
       if (!Array.isArray(items)) throw new HttpError(400, '"items" must be an array');
-      return svc.addItems(env.DB, caller, need<number>(args, "feed_id", "number"), items as svc.ItemInput[]);
+      return svc.addItems(env, caller, need<number>(args, "feed_id", "number"), items as svc.ItemInput[]);
     },
   },
   {
@@ -326,6 +327,30 @@ export const tools: Tool[] = [
     },
     async run({ env, caller }, args) {
       return svc.setEntryState(env.DB, caller, ids(args), { starred: args.starred !== false });
+    },
+  },
+  {
+    name: "notify",
+    description:
+      "Send a push notification to the owner's phone and computers, e.g. when you find something they should " +
+      "read now. Use sparingly: at most 20 per hour. Link an entry with entry_id or any page with url.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short headline; your name is prefixed automatically" },
+        body: str,
+        url: str,
+        entry_id: int,
+      },
+      required: ["title"],
+    },
+    async run({ env, caller }, args) {
+      return agentNotify(env, caller, {
+        title: need<string>(args, "title", "string"),
+        body: opt(args, "body"),
+        url: opt(args, "url"),
+        entry_id: Number.isInteger(args.entry_id) ? (args.entry_id as number) : undefined,
+      });
     },
   },
   {

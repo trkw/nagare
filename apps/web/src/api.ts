@@ -44,6 +44,8 @@ export type FeedUpdate = {
   notify?: boolean;
 };
 
+export type PushConfig = { webpush_public_key: string | null; webpush: boolean; apns: boolean; fcm: boolean };
+
 export type Me = { name: string; kind: "app" | "agent"; scopes: string[] };
 
 export type EntryQuery = {
@@ -133,6 +135,11 @@ export const api = {
   addCredential: (input: CredentialInput) =>
     request<Credential>("/credentials", { method: "POST", body: JSON.stringify(input) }),
   deleteCredential: (id: number) => request<void>(`/credentials/${id}`, { method: "DELETE" }),
+  pushConfig: () => request<PushConfig>("/push/config"),
+  registerPush: (target: { platform: "webpush"; token: string; keys: { p256dh: string; auth: string }; name: string }) =>
+    request<{ id: number }>("/push/targets", { method: "POST", body: JSON.stringify(target) }),
+  unregisterPush: (token: string) => request<void>("/push/targets", { method: "DELETE", body: JSON.stringify({ token }) }),
+  testPush: () => request<{ sent: number; failed: number; removed: number; skipped: number }>("/push/test", { method: "POST" }),
   unsubscribe: (id: number) => request<void>(`/feeds/${id}`, { method: "DELETE" }),
   entries: (q: EntryQuery) => request<Entry[]>(`/entries${qs(q)}`),
   entry: (id: number) => request<Entry>(`/entries/${id}`),
