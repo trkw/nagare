@@ -1,0 +1,24 @@
+{
+  "name": "@nagare/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply nagare --local",
+    "db:migrate:remote": "wrangler d1 migrations apply nagare --remote",
+    "token:create": "bun scripts/create-token.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.2",
+    "hono": "^4.13.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261030.1",
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.156.0"
+  }
+}
