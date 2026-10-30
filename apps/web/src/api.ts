@@ -9,6 +9,8 @@ export type Feed = {
   folder: string | null;
   added_by: string | null;
   reason: string | null;
+  selector: string | null;
+  credential: string | null;
   notify: number;
   unread: number;
   last_error: string | null;
@@ -25,6 +27,21 @@ export type Entry = {
   published_at: number;
   read: number;
   starred: number;
+};
+
+export type Credential = { id: number; name: string; kind: "basic" | "header" | "cookie"; host: string; created_at: number };
+
+export type CredentialInput =
+  | { name: string; host: string; kind: "basic"; username: string; password: string }
+  | { name: string; host: string; kind: "header"; header_name: string; header_value: string }
+  | { name: string; host: string; kind: "cookie"; cookie: string };
+
+export type FeedUpdate = {
+  title?: string;
+  folder?: string | null;
+  selector?: string | null;
+  credential?: string | null;
+  notify?: boolean;
 };
 
 export type Me = { name: string; kind: "app" | "agent"; scopes: string[] };
@@ -100,8 +117,22 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
 export const api = {
   me: (token?: string) => request<Me>("/me", {}, token),
   feeds: () => request<Feed[]>("/feeds"),
-  subscribe: (url: string, folder?: string) =>
-    request<{ feed: Feed; created: boolean }>("/feeds", { method: "POST", body: JSON.stringify({ url, folder }) }),
+  subscribe: (url: string, opts: { folder?: string; credential?: string } = {}) =>
+    request<{ feed: Feed; created: boolean }>("/feeds", { method: "POST", body: JSON.stringify({ url, ...opts }) }),
+  watchPage: (url: string, opts: { selector?: string; credential?: string } = {}) =>
+    request<{ feed: Feed; created: boolean }>("/web-feeds", { method: "POST", body: JSON.stringify({ url, ...opts }) }),
+  previewPage: (url: string, opts: { selector?: string; credential?: string } = {}) =>
+    request<{ title: string; items: { url: string | null; title: string }[] }>("/web-feeds", {
+      method: "POST",
+      body: JSON.stringify({ url, ...opts, dry_run: true }),
+    }),
+  updateFeed: (id: number, update: FeedUpdate) =>
+    request<Feed>(`/feeds/${id}`, { method: "PATCH", body: JSON.stringify(update) }),
+  refreshFeed: (id: number) => request<{ added: number }>(`/feeds/${id}/refresh`, { method: "POST" }),
+  credentials: () => request<Credential[]>("/credentials"),
+  addCredential: (input: CredentialInput) =>
+    request<Credential>("/credentials", { method: "POST", body: JSON.stringify(input) }),
+  deleteCredential: (id: number) => request<void>(`/credentials/${id}`, { method: "DELETE" }),
   unsubscribe: (id: number) => request<void>(`/feeds/${id}`, { method: "DELETE" }),
   entries: (q: EntryQuery) => request<Entry[]>(`/entries${qs(q)}`),
   entry: (id: number) => request<Entry>(`/entries/${id}`),

@@ -1,9 +1,11 @@
 import { requireScope } from "./auth";
+import { credentialIdByName, loadCredential, withCredential } from "./credentials";
 import type { Caller, Env } from "./env";
 import { HttpError } from "./env";
-import { discoverFeeds, type FetchLike } from "./feed/discover";
+import { discoverFeeds, USER_AGENT, type FetchLike } from "./feed/discover";
 import type { ParsedItem } from "./feed/parse";
-import { countInserted, insertItemsStatements, refreshFeed } from "./feed/refresh";
+import { countInserted, fetchableFeed, insertItemsStatements, refreshFeed } from "./feed/refresh";
+import { extractWebItems } from "./feed/web";
 
 // Shared by the REST API and the MCP server so both behave the same.
 
@@ -16,6 +18,8 @@ export type FeedView = {
   folder: string | null;
   added_by: string | null;
   reason: string | null;
+  selector: string | null;
+  credential: string | null;
   notify: number;
   unread: number;
   last_error: string | null;
@@ -24,14 +28,15 @@ export type FeedView = {
 export async function listFeeds(db: D1Database): Promise<FeedView[]> {
   const { results } = await db
     .prepare(
-      `SELECT f.id, f.kind, f.url, f.title, f.site_url, fo.name AS folder, t.name AS added_by, s.reason, f.notify,
-         f.last_error,
+      `SELECT f.id, f.kind, f.url, f.title, f.site_url, fo.name AS folder, t.name AS added_by, s.reason,
+         f.selector, c.name AS credential, f.notify, f.last_error,
          (SELECT COUNT(*) FROM entries e LEFT JOIN entry_states st ON st.entry_id = e.id
           WHERE e.feed_id = f.id AND COALESCE(st.read, 0) = 0) AS unread
        FROM feeds f
        JOIN subscriptions s ON s.feed_id = f.id
        LEFT JOIN folders fo ON fo.id = s.folder_id
        LEFT JOIN tokens t ON t.id = s.added_by
+       LEFT JOIN credentials c ON c.id = f.credential_id
        ORDER BY fo.sort, fo.name, f.title`,
     )
     .all<FeedView>();
@@ -62,7 +67,18 @@ async function feedByUrl(db: D1Database, url: string): Promise<FeedView | undefi
   return (await listFeeds(db)).find((f) => f.url === url);
 }
 
-export type SubscribeInput = { url: string; folder?: string; reason?: string };
+export type SubscribeInput = { url: string; folder?: string; reason?: string; credential?: string };
+
+function httpUrl(url: string): URL {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new HttpError(400, `not a URL: ${url}`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new HttpError(400, "only http(s) URLs are supported");
+  return u;
+}
 
 export async function subscribe(
   env: Env,
@@ -71,11 +87,17 @@ export async function subscribe(
   fetcher: FetchLike = fetch,
 ): Promise<{ feed: FeedView; created: boolean; added_entries: number }> {
   requireScope(caller, "subscribe");
-  const candidates = await discoverFeeds(input.url, fetcher).catch((e: Error) => {
+  httpUrl(input.url);
+  const credentialId = input.credential ? await credentialIdByName(env.DB, caller, input.credential, input.url) : null;
+  const fetchWith = withCredential(fetcher, await loadCredential(env, credentialId));
+  const candidates = await discoverFeeds(input.url, fetchWith).catch((e: Error) => {
     throw new HttpError(422, `could not read ${input.url}: ${e.message}`);
   });
   const found = candidates[0];
   if (!found) throw new HttpError(422, `no feed found at ${input.url}`);
+  if (credentialId != null && new URL(found.url).hostname !== new URL(input.url).hostname) {
+    throw new HttpError(422, `the feed is on ${new URL(found.url).hostname}, where credential ${input.credential} is not sent`);
+  }
 
   const existing = await feedByUrl(env.DB, found.url);
   if (existing) return { feed: existing, created: false, added_entries: 0 };
@@ -83,23 +105,125 @@ export async function subscribe(
   await checkFeedLimit(env.DB, caller);
   const now = Date.now();
   // Title stays empty so the first refresh fills it from the feed itself.
-  const feed = await env.DB.prepare("INSERT INTO feeds (kind, url, title, created_at) VALUES ('rss', ?, '', ?) RETURNING id")
-    .bind(found.url, now)
+  const feed = await env.DB.prepare(
+    "INSERT INTO feeds (kind, url, title, credential_id, created_at) VALUES ('rss', ?, '', ?, ?) RETURNING id",
+  )
+    .bind(found.url, credentialId, now)
     .first<{ id: number }>();
   await env.DB.prepare("INSERT INTO subscriptions (feed_id, folder_id, added_by, reason, added_at) VALUES (?, ?, ?, ?, ?)")
     .bind(feed!.id, await folderId(env.DB, input.folder), caller.id, input.reason ?? null, now)
     .run();
 
-  let added = 0;
-  try {
-    added = await refreshFeed(env, { id: feed!.id, url: found.url, etag: null, last_modified: null, error_count: 0 }, fetcher);
-  } catch {
-    // The error is recorded on the feed and shown as last_error; the subscription stays.
-  }
+  const added = await firstRefresh(env, feed!.id, fetcher);
   await env.DB.prepare("UPDATE feeds SET title = ? WHERE id = ? AND title = ''")
     .bind(found.title || found.url, feed!.id)
     .run();
   return { feed: (await feedByUrl(env.DB, found.url))!, created: true, added_entries: added };
+}
+
+async function firstRefresh(env: Env, feedId: number, fetcher: FetchLike): Promise<number> {
+  try {
+    return await refreshFeed(env, (await fetchableFeed(env.DB, feedId))!, fetcher);
+  } catch {
+    // The error is recorded on the feed and shown as last_error; the subscription stays.
+    return 0;
+  }
+}
+
+export type WebFeedInput = {
+  url: string;
+  selector?: string;
+  title?: string;
+  folder?: string;
+  reason?: string;
+  credential?: string;
+  /** Only show what would be picked up, without saving anything. */
+  dry_run?: boolean;
+};
+
+/** Watches a page without a feed: each item the page lists (or each change to it) becomes an entry. */
+export async function createWebFeed(env: Env, caller: Caller, input: WebFeedInput, fetcher: FetchLike = fetch) {
+  requireScope(caller, "subscribe");
+  const url = httpUrl(input.url).toString();
+  const selector = input.selector?.trim() || null;
+  const credentialId = input.credential ? await credentialIdByName(env.DB, caller, input.credential, url) : null;
+
+  if (input.dry_run) {
+    const fetchWith = withCredential(fetcher, await loadCredential(env, credentialId));
+    const res = await fetchWith(url, { headers: { "user-agent": USER_AGENT, accept: "text/html" } }).catch((e: Error) => {
+      throw new HttpError(422, `could not read ${url}: ${e.message}`);
+    });
+    if (!res.ok) throw new HttpError(422, `HTTP ${res.status} from ${url}`);
+    let page;
+    try {
+      page = extractWebItems(await res.text(), res.url || url, selector);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    return { title: page.title, items: page.items.map(({ url, title }) => ({ url, title })) };
+  }
+
+  const existing = await feedByUrl(env.DB, url);
+  if (existing) {
+    if (existing.kind !== "web") throw new HttpError(409, `${url} is already an ${existing.kind} feed`);
+    return { feed: existing, created: false, added_entries: 0 };
+  }
+  await checkFeedLimit(env.DB, caller);
+  const now = Date.now();
+  const feed = await env.DB.prepare(
+    `INSERT INTO feeds (kind, url, title, site_url, selector, credential_id, created_at)
+     VALUES ('web', ?, ?, ?, ?, ?, ?) RETURNING id`,
+  )
+    .bind(url, input.title?.trim() ?? "", url, selector, credentialId, now)
+    .first<{ id: number }>();
+  await env.DB.prepare("INSERT INTO subscriptions (feed_id, folder_id, added_by, reason, added_at) VALUES (?, ?, ?, ?, ?)")
+    .bind(feed!.id, await folderId(env.DB, input.folder), caller.id, input.reason ?? null, now)
+    .run();
+  const added = await firstRefresh(env, feed!.id, fetcher);
+  await env.DB.prepare("UPDATE feeds SET title = ? WHERE id = ? AND title = ''").bind(url, feed!.id).run();
+  return { feed: (await feedByUrl(env.DB, url))!, created: true, added_entries: added };
+}
+
+export type FeedUpdate = {
+  title?: string;
+  folder?: string | null;
+  selector?: string | null;
+  credential?: string | null;
+  notify?: boolean;
+  auto_translate?: boolean;
+};
+
+export async function updateFeed(env: Env, caller: Caller, feedId: number, input: FeedUpdate): Promise<FeedView> {
+  requireScope(caller, "subscribe");
+  const feed = await ownedFeed(env.DB, caller, feedId);
+  const sets: string[] = [];
+  const args: unknown[] = [];
+  if (input.title !== undefined) sets.push("title = ?"), args.push(input.title.trim());
+  if (input.notify !== undefined) sets.push("notify = ?"), args.push(input.notify ? 1 : 0);
+  if (input.auto_translate !== undefined) sets.push("auto_translate = ?"), args.push(input.auto_translate ? 1 : 0);
+  if (input.selector !== undefined) {
+    if (feed.kind !== "web") throw new HttpError(409, "only web feeds have a selector");
+    sets.push("selector = ?", "next_fetch_at = 0"), args.push(input.selector?.trim() || null);
+  }
+  if (input.credential !== undefined) {
+    if (feed.kind === "agent") throw new HttpError(409, "agent feeds are not fetched, so they take no credential");
+    const url = (await env.DB.prepare("SELECT url FROM feeds WHERE id = ?").bind(feedId).first<{ url: string }>())!.url;
+    const id = input.credential ? await credentialIdByName(env.DB, caller, input.credential, url) : null;
+    sets.push("credential_id = ?", "next_fetch_at = 0"), args.push(id);
+  }
+  // A changed fetch setting invalidates the cached validators, so the next run fetches the page in full.
+  if (sets.some((s) => s.startsWith("next_fetch_at"))) sets.push("etag = NULL", "last_modified = NULL", "error_count = 0");
+  const statements = [];
+  if (sets.length) {
+    statements.push(env.DB.prepare(`UPDATE feeds SET ${[...new Set(sets)].join(", ")} WHERE id = ?`).bind(...args, feedId));
+  }
+  if (input.folder !== undefined) {
+    statements.push(
+      env.DB.prepare("UPDATE subscriptions SET folder_id = ? WHERE feed_id = ?").bind(await folderId(env.DB, input.folder), feedId),
+    );
+  }
+  if (statements.length) await env.DB.batch(statements);
+  return (await listFeeds(env.DB)).find((f) => f.id === feedId)!;
 }
 
 async function ownedFeed(db: D1Database, caller: Caller, feedId: number) {
