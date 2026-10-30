@@ -27,6 +27,8 @@ test("extractArticle returns null for pages without content", () => {
 test("looksJapanese", () => {
   expect(looksJapanese("Cloudflare Workersで日本語の全文検索をする方法")).toBe(true);
   expect(looksJapanese("How to run full-text search on Workers")).toBe(false);
+  expect(looksJapanese("如何在边缘运行全文搜索服务")).toBe(false);
+  expect(looksJapanese("東京都議会議員選挙の結果")).toBe(true);
   expect(looksJapanese("")).toBe(false);
 });
 
@@ -38,10 +40,14 @@ test("textBlocks translates innermost blocks and keeps structure", () => {
   );
 });
 
-test("textBlocks wraps bare text", () => {
-  const { texts, apply } = textBlocks("just text & more");
-  expect(texts).toEqual(["just text & more"]);
-  expect(apply(["訳"])).toBe("<p>訳</p>");
+test("textBlocks also covers text outside leaf blocks", () => {
+  const { texts, apply } = textBlocks(
+    "<div>Introduction</div><p>Main</p><ul><li>Parent <ul><li>child</li></ul></li></ul>bare & text<pre>code()</pre>",
+  );
+  expect(texts).toEqual(["Main", "child", "Introduction", "Parent", "bare & text"]);
+  expect(apply(["本文", "子", "はじめに", "親", "地の文 & 文"])).toBe(
+    "<div>はじめに</div><p>本文</p><ul><li>親 <ul><li>子</li></ul></li></ul>地の文 &amp; 文<pre>code()</pre>",
+  );
 });
 
 test("workersAiTranslator calls m2m100 per block", async () => {

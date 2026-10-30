@@ -13,36 +13,65 @@ export type Translator = {
 const LANG_NAMES: Record<string, string> = { ja: "Japanese", en: "English" };
 const M2M_NAMES: Record<string, string> = { ja: "japanese", en: "english" };
 
-/** True when most letters are kana or kanji, so a Japanese reader needs no translation. */
+/** True when the text reads as Japanese: mostly kana/kanji, with kana present (so Chinese doesn't count). */
 export function looksJapanese(text: string): boolean {
-  const letters = text.replace(/[\s\d\p{P}\p{S}]/gu, "");
-  if (!letters) return false;
-  const jp = letters.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/gu)?.length ?? 0;
-  return jp / [...letters].length > 0.3;
+  const letters = [...text.replace(/[\s\d\p{P}\p{S}]/gu, "")];
+  if (letters.length === 0) return false;
+  const kana = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu)?.length ?? 0;
+  const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+  return (kana + han) / letters.length > 0.3 && kana / letters.length > 0.05;
 }
 
 const BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, th, dt, dd";
+const SKIP = new Set(["SCRIPT", "STYLE", "PRE", "CODE"]);
+
+type TextNode = { data: string; parentElement: Element | null };
 
 /**
- * Splits HTML into the text of its innermost block elements, so a plain-text model can
- * translate them one by one; `apply` writes the translations back in place.
+ * Splits HTML into translatable units for a plain-text model: the text of each innermost
+ * block element, plus any text outside those blocks. `apply` writes translations back in place.
  */
 export function textBlocks(html: string): { texts: string[]; apply: (translated: string[]) => string } {
   const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
   const blocks = [...document.querySelectorAll(BLOCKS)].filter(
     (el) => !el.querySelector(BLOCKS) && (el.textContent ?? "").trim() !== "",
   );
-  if (blocks.length === 0 && (document.body.textContent ?? "").trim() !== "") {
-    return {
-      texts: [document.body.textContent!.trim()],
-      apply: ([t]) => `<p>${escapeHtml(t ?? "")}</p>`,
-    };
-  }
+  const blockSet = new Set<unknown>(blocks);
+  const covered = (node: TextNode) => {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      if (blockSet.has(el) || SKIP.has(el.tagName)) return true;
+    }
+    return false;
+  };
+  const stray: TextNode[] = [];
+  const walk = (node: Node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) {
+        const t = child as unknown as TextNode;
+        if (t.data.trim() && !covered(t)) stray.push(t);
+      } else if (child.nodeType === 1) {
+        walk(child);
+      }
+    }
+  };
+  walk(document.body as unknown as Node);
+
   return {
-    texts: blocks.map((el) => el.textContent!.replace(/\s+/g, " ").trim()),
+    texts: [
+      ...blocks.map((el) => el.textContent!.replace(/\s+/g, " ").trim()),
+      ...stray.map((t) => t.data.replace(/\s+/g, " ").trim()),
+    ],
     apply(translated) {
       blocks.forEach((el, i) => {
-        el.textContent = translated[i] ?? el.textContent;
+        const t = translated[i];
+        if (t != null) el.textContent = t;
+      });
+      stray.forEach((node, j) => {
+        const t = translated[blocks.length + j];
+        if (t == null) return;
+        const lead = node.data.match(/^\s*/)![0];
+        const trail = node.data.match(/\s*$/)![0];
+        node.data = `${lead}${t}${trail}`;
       });
       return document.body.innerHTML;
     },

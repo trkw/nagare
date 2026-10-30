@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Entry } from "./api";
 
 // Feed HTML is untrusted: sanitize it, and open its links outside the app.
@@ -32,6 +32,9 @@ export function Article(props: {
   const [translation, setTranslation] = useState<{ title: string; content: string } | null>(null);
   const [showTranslation, setShowTranslation] = useState(false);
   const [busy, setBusy] = useState<"fulltext" | "translate" | null>(null);
+  // The entry on screen; responses for an entry the user has left are dropped.
+  const currentId = useRef(entry.id);
+  currentId.current = entry.id;
   const shown = showTranslation && translation ? translation : { title: entry.title, content: entry.content ?? "" };
   const html = useMemo(() => DOMPurify.sanitize(shown.content), [shown.content]);
 
@@ -39,6 +42,7 @@ export function Article(props: {
     setHandoffOpen(false);
     setTranslation(null);
     setShowTranslation(false);
+    setBusy(null);
     return () => {
       if (canSpeak) speechSynthesis.cancel();
       setSpeaking(false);
@@ -62,31 +66,35 @@ export function Article(props: {
   }
 
   async function loadFullText() {
+    const id = entry.id;
     setBusy("fulltext");
     try {
-      const { content } = await api.fullText(entry.id);
+      const { content } = await api.fullText(id);
+      props.onContent(content);
+      if (currentId.current !== id) return;
       setTranslation(null);
       setShowTranslation(false);
-      props.onContent(content);
     } catch (e) {
-      props.onError((e as Error).message);
+      if (currentId.current === id) props.onError((e as Error).message);
     } finally {
-      setBusy(null);
+      if (currentId.current === id) setBusy(null);
     }
   }
 
   async function toggleTranslation() {
     if (showTranslation) return setShowTranslation(false);
     if (translation) return setShowTranslation(true);
+    const id = entry.id;
     setBusy("translate");
     try {
-      const t = await api.translate(entry.id);
+      const t = await api.translate(id);
+      if (currentId.current !== id) return;
       setTranslation(t);
       setShowTranslation(true);
     } catch (e) {
-      props.onError((e as Error).message);
+      if (currentId.current === id) props.onError((e as Error).message);
     } finally {
-      setBusy(null);
+      if (currentId.current === id) setBusy(null);
     }
   }
 
