@@ -1,5 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { loadCredential, withCredential } from "../credentials";
 import type { Env } from "../env";
 import { HttpError } from "../env";
 import { USER_AGENT, type FetchLike } from "./discover";
@@ -22,14 +23,18 @@ export function extractArticle(html: string, pageUrl: string): { title: string; 
 
 /** Fetches the entry's page, stores the extracted article as full_content and returns it. */
 export async function fetchFullText(env: Env, entryId: number, fetcher: FetchLike = fetch): Promise<string> {
-  const entry = await env.DB.prepare("SELECT url, full_content FROM entries WHERE id = ?")
+  const entry = await env.DB.prepare(
+    "SELECT e.url, e.full_content, f.credential_id FROM entries e JOIN feeds f ON f.id = e.feed_id WHERE e.id = ?",
+  )
     .bind(entryId)
-    .first<{ url: string | null; full_content: string | null }>();
+    .first<{ url: string | null; full_content: string | null; credential_id: number | null }>();
   if (!entry) throw new HttpError(404, `entry ${entryId} not found`);
   if (entry.full_content) return entry.full_content;
   if (!entry.url) throw new HttpError(422, "entry has no URL to fetch");
 
-  const res = await fetcher(entry.url, { headers: { "user-agent": USER_AGENT, accept: "text/html" } }).catch((e: Error) => {
+  // Articles on a protected site need the feed's login too; it is only sent to its own host.
+  const fetchWith = withCredential(fetcher, await loadCredential(env, entry.credential_id));
+  const res = await fetchWith(entry.url, { headers: { "user-agent": USER_AGENT, accept: "text/html" } }).catch((e: Error) => {
     throw new HttpError(502, `could not fetch ${entry.url}: ${e.message}`);
   });
   if (!res.ok) throw new HttpError(502, `HTTP ${res.status} from ${entry.url}`);

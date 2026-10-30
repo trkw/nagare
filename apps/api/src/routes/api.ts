@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { authenticate, requireScope } from "../auth";
 import type { Caller, Env } from "../env";
 import { HttpError } from "../env";
+import { createCredential, deleteCredential, listCredentials } from "../credentials";
 import { fetchFullText } from "../feed/fulltext";
-import { refreshFeed } from "../feed/refresh";
+import { fetchableFeed, refreshFeed } from "../feed/refresh";
 import { translateEntry } from "../translate";
 import { exportOpml, importOpml } from "../opml";
 import * as svc from "../service";
@@ -49,6 +50,11 @@ api.post("/feeds", async (c) => {
   return c.json(result, result.created ? 201 : 200);
 });
 
+api.patch("/feeds/:id", async (c) => {
+  const body = await json<svc.FeedUpdate>(c.req.raw);
+  return c.json(await svc.updateFeed(c.env, c.get("caller"), int(c.req.param("id"))!, body));
+});
+
 api.delete("/feeds/:id", async (c) => {
   await svc.unsubscribe(c.env.DB, c.get("caller"), int(c.req.param("id"))!);
   return c.body(null, 204);
@@ -56,14 +62,33 @@ api.delete("/feeds/:id", async (c) => {
 
 api.post("/feeds/:id/refresh", async (c) => {
   requireScope(c.get("caller"), "write");
-  const feed = await c.env.DB.prepare("SELECT id, url, etag, last_modified, error_count FROM feeds WHERE id = ? AND kind = 'rss'")
-    .bind(int(c.req.param("id"))!)
-    .first<{ id: number; url: string; etag: string | null; last_modified: string | null; error_count: number }>();
-  if (!feed) throw new HttpError(404, "rss feed not found");
+  const feed = await fetchableFeed(c.env.DB, int(c.req.param("id"))!);
+  if (!feed) throw new HttpError(404, "feed not found (agent feeds are not fetched)");
   const added = await refreshFeed(c.env, feed).catch((e: Error) => {
     throw new HttpError(502, e.message);
   });
   return c.json({ added });
+});
+
+api.post("/web-feeds", async (c) => {
+  const body = await json<svc.WebFeedInput>(c.req.raw);
+  if (!body.url) throw new HttpError(400, "url is required");
+  const result = await svc.createWebFeed(c.env, c.get("caller"), body);
+  return c.json(result, "created" in result && result.created ? 201 : 200);
+});
+
+api.get("/credentials", async (c) => {
+  requireScope(c.get("caller"), "read");
+  return c.json(await listCredentials(c.env.DB));
+});
+
+api.post("/credentials", async (c) => {
+  return c.json(await createCredential(c.env, c.get("caller"), await json<Record<string, unknown>>(c.req.raw)), 201);
+});
+
+api.delete("/credentials/:id", async (c) => {
+  await deleteCredential(c.env.DB, c.get("caller"), int(c.req.param("id"))!);
+  return c.body(null, 204);
 });
 
 api.post("/agent-feeds", async (c) => {

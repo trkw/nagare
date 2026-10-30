@@ -1,5 +1,6 @@
 import { requireScope } from "../auth";
 import type { Caller, Env } from "../env";
+import { listCredentials } from "../credentials";
 import { HttpError } from "../env";
 import { discoverFeeds } from "../feed/discover";
 import { fetchFullText } from "../feed/fulltext";
@@ -66,7 +67,8 @@ export const tools: Tool[] = [
     inputSchema: { type: "object", properties: { url: str }, required: ["url"] },
     async run({ caller }, args) {
       requireScope(caller, "read");
-      return { feeds: await discoverFeeds(need<string>(args, "url", "string")) };
+      const feeds = await discoverFeeds(need<string>(args, "url", "string"));
+      return feeds.length ? { feeds } : { feeds, hint: "No feed found. create_web_feed can watch the page itself." };
     },
   },
   {
@@ -80,6 +82,7 @@ export const tools: Tool[] = [
         url: str,
         reason: { type: "string", description: "Why this feed is worth reading, shown to the owner" },
         folder: { type: "string", description: "Folder name; created if missing" },
+        credential: { type: "string", description: "Name of a saved login (see list_credentials) for a protected feed" },
       },
       required: ["url", "reason"],
     },
@@ -88,7 +91,50 @@ export const tools: Tool[] = [
         url: need<string>(args, "url", "string"),
         reason: opt(args, "reason"),
         folder: opt(args, "folder"),
+        credential: opt(args, "credential"),
       });
+    },
+  },
+  {
+    name: "create_web_feed",
+    description:
+      "Watch a web page that has no feed. Without a selector, the page's articles or main-content links become entries. " +
+      "With a CSS selector, each matching element is an entry; an element without a link becomes a new entry whenever " +
+      "its text changes. Try dry_run first to see what would be picked up.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: str,
+        selector: { type: "string", description: "CSS selector for the items, e.g. \"ul.news > li\"" },
+        title: str,
+        reason: { type: "string", description: "Why this page is worth watching, shown to the owner" },
+        folder: str,
+        credential: { type: "string", description: "Name of a saved login for a members-only page" },
+        dry_run: { type: "boolean", description: "Only return the items that would be found" },
+      },
+      required: ["url", "reason"],
+    },
+    async run({ env, caller }, args) {
+      return svc.createWebFeed(env, caller, {
+        url: need<string>(args, "url", "string"),
+        selector: opt(args, "selector"),
+        title: opt(args, "title"),
+        reason: opt(args, "reason"),
+        folder: opt(args, "folder"),
+        credential: opt(args, "credential"),
+        dry_run: args.dry_run === true,
+      });
+    },
+  },
+  {
+    name: "list_credentials",
+    description:
+      "List the saved logins (name, kind, host) you can pass as credential when subscribing to a protected feed or page. " +
+      "Secrets are never shown, and each login is only sent to its host. The owner adds them in the app.",
+    inputSchema: { type: "object", properties: {} },
+    async run({ env, caller }) {
+      requireScope(caller, "read");
+      return { credentials: await listCredentials(env.DB) };
     },
   },
   {

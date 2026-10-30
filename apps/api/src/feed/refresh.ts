@@ -1,6 +1,8 @@
+import { loadCredential, withCredential } from "../credentials";
 import type { Env } from "../env";
 import { USER_AGENT, type FetchLike } from "./discover";
 import { parseFeed, type ParsedItem } from "./parse";
+import { extractWebItems } from "./web";
 
 const BASE_INTERVAL = 30 * 60_000;
 const MAX_INTERVAL = 24 * 60 * 60_000;
@@ -8,7 +10,23 @@ const MAX_INTERVAL = 24 * 60 * 60_000;
 const CONCURRENCY = 6;
 const PER_RUN = 40;
 
-type FeedRow = { id: number; url: string; etag: string | null; last_modified: string | null; error_count: number };
+export type FeedRow = {
+  id: number;
+  kind: "rss" | "web";
+  url: string;
+  selector: string | null;
+  credential_id: number | null;
+  etag: string | null;
+  last_modified: string | null;
+  error_count: number;
+};
+
+const FEED_COLUMNS = "id, kind, url, selector, credential_id, etag, last_modified, error_count";
+
+/** A feed that Nagare fetches itself (RSS or a watched web page); null for agent feeds. */
+export async function fetchableFeed(db: D1Database, id: number): Promise<FeedRow | null> {
+  return db.prepare(`SELECT ${FEED_COLUMNS} FROM feeds WHERE id = ? AND kind IN ('rss', 'web')`).bind(id).first<FeedRow>();
+}
 
 export function nextFetchDelay(errorCount: number): number {
   return Math.min(BASE_INTERVAL * 2 ** errorCount, MAX_INTERVAL);
@@ -30,7 +48,7 @@ export function countInserted(results: D1Result[]): number {
   return results.reduce((n, r) => n + r.results.length, 0);
 }
 
-/** Fetches one RSS feed, stores new entries and schedules the next fetch. Returns the number of new entries. */
+/** Fetches one feed or watched page, stores new entries and schedules the next fetch. Returns the number of new entries. */
 export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = fetch): Promise<number> {
   const now = Date.now();
   const headers: Record<string, string> = { "user-agent": USER_AGENT };
@@ -38,7 +56,8 @@ export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = 
   if (feed.last_modified) headers["if-modified-since"] = feed.last_modified;
 
   try {
-    const res = await fetcher(feed.url, { headers });
+    const fetchWith = withCredential(fetcher, await loadCredential(env, feed.credential_id));
+    const res = await fetchWith(feed.url, { headers });
     if (res.status === 304) {
       await env.DB.prepare(
         "UPDATE feeds SET last_fetched_at = ?, next_fetch_at = ?, error_count = 0, last_error = NULL WHERE id = ?",
@@ -49,7 +68,13 @@ export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = 
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    const parsed = parseFeed(await res.text(), res.url || feed.url);
+    const body = await res.text();
+    const parsed = feed.kind === "web" ? extractWebItems(body, res.url || feed.url, feed.selector) : parseFeed(body, res.url || feed.url);
+    if (feed.kind === "web") {
+      if (parsed.items.length === 0) throw new Error(feed.selector ? `nothing matches ${feed.selector}` : "no items found on the page");
+      // Page items rarely carry dates; inserting bottom-up keeps the page's order in the list.
+      parsed.items.reverse();
+    }
     const results = await env.DB.batch([
       ...insertItemsStatements(env.DB, feed.id, parsed.items, now),
       env.DB.prepare(
@@ -78,11 +103,11 @@ export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = 
   }
 }
 
-/** Cron entry point: refreshes the RSS feeds that are due. */
+/** Cron entry point: refreshes the feeds and watched pages that are due. */
 export async function refreshDueFeeds(env: Env, fetcher: FetchLike = fetch): Promise<{ fetched: number; added: number; failed: number }> {
   const { results: due } = await env.DB.prepare(
-    `SELECT id, url, etag, last_modified, error_count FROM feeds
-     WHERE kind = 'rss' AND next_fetch_at <= ? ORDER BY next_fetch_at LIMIT ?`,
+    `SELECT ${FEED_COLUMNS} FROM feeds
+     WHERE kind IN ('rss', 'web') AND next_fetch_at <= ? ORDER BY next_fetch_at LIMIT ?`,
   )
     .bind(Date.now(), PER_RUN)
     .all<FeedRow>();

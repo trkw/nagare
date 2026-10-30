@@ -6,6 +6,8 @@ export type Env = {
   ANTHROPIC_API_KEY?: string;
   /** Overrides the Claude model used for translation. */
   TRANSLATE_MODEL?: string;
+  /** Secret. Encrypts the stored logins for password-protected feeds. */
+  CREDENTIALS_KEY?: string;
 };
 
 export type Scope = "read" | "write" | "subscribe" | "notify";

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, getToken, setToken, type Entry, type Feed, type Me } from "./api";
+import { api, ApiError, getToken, setToken, type Credential, type Entry, type Feed, type Me } from "./api";
 import { Article } from "./Article";
+import { CredentialsPanel, FeedSettings } from "./Settings";
 
 type View = { kind: "all" } | { kind: "starred" } | { kind: "folder"; name: string } | { kind: "feed"; id: number };
 
@@ -83,14 +84,18 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Entry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [dialog, setDialog] = useState<"credentials" | "feed" | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   // Bumped per list request; a response whose number is stale belongs to an old query.
   const requestSeq = useRef(0);
 
   const refreshFeeds = useCallback(() => api.feeds().then(setFeeds).catch((e: Error) => setError(e.message)), []);
+  const refreshCredentials = useCallback(() => api.credentials().then(setCredentials).catch(() => undefined), []);
   useEffect(() => {
     refreshFeeds();
-  }, [refreshFeeds]);
+    refreshCredentials();
+  }, [refreshFeeds, refreshCredentials]);
 
   const query = useMemo(() => {
     const unread = view.kind !== "starred" && unreadOnly;
@@ -255,23 +260,38 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
           </section>
         ))}
         <SubscribeForm
+          credentials={credentials}
           onDone={(feed) => {
             refreshFeeds();
             setView({ kind: "feed", id: feed.id });
           }}
           onError={setError}
         />
+        {me.kind === "app" && (
+          <div className="sidebar-footer">
+            <button className="link" onClick={() => setDialog("credentials")}>
+              ログイン情報（パスワード付きフィード用）
+            </button>
+          </div>
+        )}
       </nav>
 
       <section className="list">
         <header>
           <h2>{title}</h2>
-          {view.kind !== "starred" && (
-            <label className="toggle">
-              <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} />
-              未読のみ
-            </label>
-          )}
+          <span className="header-actions">
+            {view.kind !== "starred" && (
+              <label className="toggle">
+                <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} />
+                未読のみ
+              </label>
+            )}
+            {currentFeed && (
+              <button className="link" onClick={() => setDialog("feed")}>
+                設定
+              </button>
+            )}
+          </span>
         </header>
         {currentFeed && (currentFeed.reason || currentFeed.added_by !== me.name) && (
           <div className="feed-note">
@@ -332,6 +352,27 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
         )}
       </main>
 
+      {dialog === "credentials" && (
+        <CredentialsPanel
+          credentials={credentials}
+          onChange={refreshCredentials}
+          onClose={() => setDialog(null)}
+          onError={setError}
+        />
+      )}
+      {dialog === "feed" && currentFeed && (
+        <FeedSettings
+          feed={currentFeed}
+          credentials={credentials}
+          onSaved={() => {
+            refreshFeeds();
+            load(false);
+          }}
+          onClose={() => setDialog(null)}
+          onError={setError}
+        />
+      )}
+
       {error && (
         <div className="toast" onClick={() => setError(null)}>
           {error}
@@ -361,30 +402,74 @@ function NavItem(props: {
   );
 }
 
-function SubscribeForm({ onDone, onError }: { onDone: (feed: Feed) => void; onError: (msg: string) => void }) {
+function SubscribeForm(props: { credentials: Credential[]; onDone: (feed: Feed) => void; onError: (msg: string) => void }) {
   const [url, setUrl] = useState("");
+  const [credential, setCredential] = useState("");
   const [busy, setBusy] = useState(false);
+  // Set when the URL has no feed, to offer watching the page instead.
+  const [noFeed, setNoFeed] = useState(false);
+  let host = "";
+  try {
+    host = new URL(url.trim()).hostname;
+  } catch {
+    // Not a full URL yet.
+  }
+  const usable = props.credentials.filter((c) => c.host === host);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function run(action: () => Promise<{ feed: Feed }>) {
     setBusy(true);
     try {
-      const { feed } = await api.subscribe(url.trim());
+      const { feed } = await action();
       setUrl("");
-      onDone(feed);
+      setNoFeed(false);
+      props.onDone(feed);
     } catch (err) {
-      onError((err as Error).message);
+      if (err instanceof ApiError && err.message.startsWith("no feed found")) setNoFeed(true);
+      else props.onError((err as Error).message);
     } finally {
       setBusy(false);
     }
   }
 
+  // Only a login for the current host is sent; a choice left over from another URL is dropped.
+  const opts = { credential: usable.some((c) => c.name === credential) ? credential : undefined };
   return (
-    <form className="subscribe" onSubmit={submit}>
-      <input placeholder="サイトかフィードのURL" value={url} onChange={(e) => setUrl(e.target.value)} />
+    <form
+      className="subscribe"
+      onSubmit={(e) => {
+        e.preventDefault();
+        run(() => api.subscribe(url.trim(), opts));
+      }}
+    >
+      <input
+        placeholder="サイトかフィードのURL"
+        value={url}
+        onChange={(e) => {
+          setUrl(e.target.value);
+          setNoFeed(false);
+        }}
+      />
+      {usable.length > 0 && (
+        <select value={credential} onChange={(e) => setCredential(e.target.value)} aria-label="ログイン">
+          <option value="">ログインなし</option>
+          {usable.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name} でログイン
+            </option>
+          ))}
+        </select>
+      )}
       <button type="submit" disabled={busy || !url.trim()}>
         {busy ? "探しています…" : "購読"}
       </button>
+      {noFeed && (
+        <div className="no-feed small">
+          フィードが見つかりませんでした。ページの更新を見張ることもできます。
+          <button type="button" disabled={busy} onClick={() => run(() => api.watchPage(url.trim(), opts))}>
+            このページを見張る
+          </button>
+        </div>
+      )}
     </form>
   );
 }
