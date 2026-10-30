@@ -1,0 +1,10 @@
+{
+  "name": "nagare",
+  "private": true,
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "bun run --cwd apps/api dev",
+    "test": "bun run --cwd apps/api test",
+    "typecheck": "bun run --cwd apps/api typecheck"
+  }
+}

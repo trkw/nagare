@@ -1,0 +1,100 @@
+import type { Env } from "../env";
+import { USER_AGENT, type FetchLike } from "./discover";
+import { parseFeed, type ParsedItem } from "./parse";
+
+const BASE_INTERVAL = 30 * 60_000;
+const MAX_INTERVAL = 24 * 60 * 60_000;
+// Workers allow 6 open connections at a time and 50 subrequests per invocation on the free plan.
+const CONCURRENCY = 6;
+const PER_RUN = 40;
+
+type FeedRow = { id: number; url: string; etag: string | null; last_modified: string | null; error_count: number };
+
+export function nextFetchDelay(errorCount: number): number {
+  return Math.min(BASE_INTERVAL * 2 ** errorCount, MAX_INTERVAL);
+}
+
+export function insertItemsStatements(db: D1Database, feedId: number, items: ParsedItem[], now: number) {
+  return items.map((it) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO entries (feed_id, guid, url, title, author, content, published_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      )
+      .bind(feedId, it.guid, it.url, it.title, it.author, it.content, it.publishedAt ?? now, now),
+  );
+}
+
+/** Counts rows from insertItemsStatements; meta.changes would also count the FTS trigger writes. */
+export function countInserted(results: D1Result[]): number {
+  return results.reduce((n, r) => n + r.results.length, 0);
+}
+
+/** Fetches one RSS feed, stores new entries and schedules the next fetch. Returns the number of new entries. */
+export async function refreshFeed(env: Env, feed: FeedRow, fetcher: FetchLike = fetch): Promise<number> {
+  const now = Date.now();
+  const headers: Record<string, string> = { "user-agent": USER_AGENT };
+  if (feed.etag) headers["if-none-match"] = feed.etag;
+  if (feed.last_modified) headers["if-modified-since"] = feed.last_modified;
+
+  try {
+    const res = await fetcher(feed.url, { headers });
+    if (res.status === 304) {
+      await env.DB.prepare(
+        "UPDATE feeds SET last_fetched_at = ?, next_fetch_at = ?, error_count = 0, last_error = NULL WHERE id = ?",
+      )
+        .bind(now, now + BASE_INTERVAL, feed.id)
+        .run();
+      return 0;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const parsed = parseFeed(await res.text(), res.url || feed.url);
+    const results = await env.DB.batch([
+      ...insertItemsStatements(env.DB, feed.id, parsed.items, now),
+      env.DB.prepare(
+        `UPDATE feeds SET title = CASE WHEN title = '' THEN ? ELSE title END, site_url = COALESCE(?, site_url),
+           etag = ?, last_modified = ?, last_fetched_at = ?, next_fetch_at = ?, error_count = 0, last_error = NULL
+         WHERE id = ?`,
+      ).bind(
+        parsed.title,
+        parsed.siteUrl,
+        res.headers.get("etag"),
+        res.headers.get("last-modified"),
+        now,
+        now + BASE_INTERVAL,
+        feed.id,
+      ),
+    ]);
+    return countInserted(results.slice(0, -1));
+  } catch (e) {
+    const errors = feed.error_count + 1;
+    await env.DB.prepare(
+      "UPDATE feeds SET last_fetched_at = ?, next_fetch_at = ?, error_count = ?, last_error = ? WHERE id = ?",
+    )
+      .bind(now, now + nextFetchDelay(errors), errors, String((e as Error).message ?? e), feed.id)
+      .run();
+    throw e;
+  }
+}
+
+/** Cron entry point: refreshes the RSS feeds that are due. */
+export async function refreshDueFeeds(env: Env, fetcher: FetchLike = fetch): Promise<{ fetched: number; added: number; failed: number }> {
+  const { results: due } = await env.DB.prepare(
+    `SELECT id, url, etag, last_modified, error_count FROM feeds
+     WHERE kind = 'rss' AND next_fetch_at <= ? ORDER BY next_fetch_at LIMIT ?`,
+  )
+    .bind(Date.now(), PER_RUN)
+    .all<FeedRow>();
+
+  let added = 0;
+  let failed = 0;
+  for (let i = 0; i < due.length; i += CONCURRENCY) {
+    const settled = await Promise.allSettled(due.slice(i, i + CONCURRENCY).map((f) => refreshFeed(env, f, fetcher)));
+    for (const s of settled) {
+      if (s.status === "fulfilled") added += s.value;
+      else failed++;
+    }
+  }
+  return { fetched: due.length, added, failed };
+}
