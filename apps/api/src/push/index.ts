@@ -115,7 +115,7 @@ async function requestFor(env: Env, t: TargetRow, msg: PushMessage, fetcher: typ
     case "webpush": {
       const v = vapid(env);
       if (!v) return null;
-      const payload = { title: msg.title, body, tag: msg.threadId, ...data };
+      const payload = { title: msg.title, body, tag: msg.threadId, entry_id: msg.entryId ?? undefined, url: msg.url ?? undefined };
       return webPushRequest(t.token, JSON.parse(t.keys!) as WebPushKeys, payload, v);
     }
     case "apns": {
@@ -137,10 +137,15 @@ async function isDead(t: TargetRow, res: Response): Promise<boolean> {
 
 /** Logs the notification and sends it to every registered device. */
 export async function sendNotification(env: Env, msg: PushMessage, fetcher: typeof fetch = fetch) {
-  const now = Date.now();
   await env.DB.prepare("INSERT INTO notifications (source, title, body, url, entry_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .bind(msg.source ?? null, msg.title, msg.body ?? "", msg.url ?? null, msg.entryId ?? null, now)
+    .bind(msg.source ?? null, msg.title, msg.body ?? "", msg.url ?? null, msg.entryId ?? null, Date.now())
     .run();
+  return deliver(env, msg, fetcher);
+}
+
+/** Sends an already logged notification to every registered device. */
+async function deliver(env: Env, msg: PushMessage, fetcher: typeof fetch) {
+  const now = Date.now();
   const { results: targets } = await env.DB.prepare("SELECT id, platform, token, keys, sandbox FROM push_targets").all<TargetRow>();
 
   let sent = 0;
@@ -211,12 +216,6 @@ export async function agentNotify(
 ) {
   requireScope(caller, "notify");
   if (!input.title.trim()) throw new HttpError(400, "title is required");
-  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM notifications WHERE source = ? AND created_at > ?")
-    .bind(caller.id, Date.now() - 3600_000)
-    .first<{ n: number }>();
-  if ((recent?.n ?? 0) >= AGENT_LIMIT_PER_HOUR) {
-    throw new HttpError(429, `notification limit reached (${AGENT_LIMIT_PER_HOUR} per hour)`);
-  }
   if (input.url) {
     try {
       new URL(input.url);
@@ -224,17 +223,24 @@ export async function agentNotify(
       throw new HttpError(400, "url must be absolute");
     }
   }
-  const result = await sendNotification(
-    env,
-    {
-      title: `${caller.name}: ${input.title.trim().slice(0, 200)}`,
-      body: input.body?.slice(0, 1000),
-      url: input.url,
-      entryId: input.entry_id,
-      threadId: `agent-${caller.id}`,
-      source: caller.id,
-    },
-    fetcher,
-  );
-  return result;
+  const msg: PushMessage = {
+    title: `${caller.name}: ${input.title.trim().slice(0, 200)}`,
+    body: input.body?.slice(0, 1000),
+    url: input.url,
+    entryId: input.entry_id,
+    threadId: `agent-${caller.id}`,
+    source: caller.id,
+  };
+  // Checking the quota and logging the notification is one statement, so concurrent calls cannot overrun it.
+  const now = Date.now();
+  const reserved = await env.DB.prepare(
+    `INSERT INTO notifications (source, title, body, url, entry_id, created_at)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6
+     WHERE (SELECT COUNT(*) FROM notifications WHERE source = ?1 AND created_at > ?7) < ?8
+     RETURNING id`,
+  )
+    .bind(caller.id, msg.title, msg.body ?? "", msg.url ?? null, msg.entryId ?? null, now, now - 3600_000, AGENT_LIMIT_PER_HOUR)
+    .first<{ id: number }>();
+  if (!reserved) throw new HttpError(429, `notification limit reached (${AGENT_LIMIT_PER_HOUR} per hour)`);
+  return deliver(env, msg, fetcher);
 }

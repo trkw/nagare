@@ -55,8 +55,38 @@ export async function vapidHeader(endpoint: string, vapid: Vapid): Promise<strin
   return `vapid t=${jwt}, k=${vapid.publicKey}`;
 }
 
-export async function webPushRequest(endpoint: string, keys: WebPushKeys, payload: unknown, vapid: Vapid): Promise<Request> {
-  const body = await encryptPayload(keys, text(JSON.stringify(payload)));
+// One aes128gcm record of 4096 bytes holds the payload plus the 16-byte tag and the delimiter byte.
+// Push services also cap the whole body at 4096 bytes, which includes the 86-byte header.
+export const MAX_PAYLOAD_BYTES = 4096 - 86 - 16 - 1;
+
+export type WebPushPayload = { title: string; body: string; url?: string; [key: string]: unknown };
+
+/** Serializes the payload, shortening the body (then dropping the url) until it fits in one record. */
+export function fitPayload(payload: WebPushPayload): Uint8Array {
+  let p = { ...payload };
+  let bytes = text(JSON.stringify(p));
+  if (bytes.length > MAX_PAYLOAD_BYTES && p.url && text(p.url).length > 1000) {
+    const { url: _drop, ...rest } = p;
+    p = rest;
+    bytes = text(JSON.stringify(p));
+  }
+  let chars = [...p.body];
+  while (bytes.length > MAX_PAYLOAD_BYTES && chars.length > 0) {
+    const over = bytes.length - MAX_PAYLOAD_BYTES;
+    // A character is at most 4 bytes in UTF-8 (and 6 when JSON-escaped), so this always makes progress.
+    chars = chars.slice(0, Math.max(0, chars.length - Math.ceil(over / 6) - 1));
+    p = { ...p, body: `${chars.join("")}…` };
+    bytes = text(JSON.stringify(p));
+  }
+  if (bytes.length > MAX_PAYLOAD_BYTES) {
+    p = { ...p, title: [...p.title].slice(0, 100).join(""), body: "" };
+    bytes = text(JSON.stringify(p));
+  }
+  return bytes;
+}
+
+export async function webPushRequest(endpoint: string, keys: WebPushKeys, payload: WebPushPayload, vapid: Vapid): Promise<Request> {
+  const body = await encryptPayload(keys, fitPayload(payload));
   return new Request(endpoint, {
     method: "POST",
     headers: {

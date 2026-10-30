@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { apnsRequest, apnsTokenDead } from "../src/push/apns";
 import { fcmRequest } from "../src/push/fcm";
 import { b64url, concat, unb64url } from "../src/push/jwt";
-import { encryptPayload, generateVapidKeys, vapidHeader } from "../src/push/webpush";
+import { encryptPayload, fitPayload, generateVapidKeys, MAX_PAYLOAD_BYTES, vapidHeader } from "../src/push/webpush";
 
 const text = (s: string) => new TextEncoder().encode(s);
 
@@ -95,4 +95,16 @@ test("FCM requests get an OAuth token from the service account and stringify dat
   const [h, c, sig] = assertion.split(".");
   const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", pair.publicKey, unb64url(sig!), text(`${h}.${c}`));
   expect(ok).toBe(true);
+});
+
+test("long payloads are shortened to fit one record", () => {
+  const long = { title: "あ".repeat(200), body: "い".repeat(1000), url: `https://example.com/${"x".repeat(620)}`, entry_id: 1 };
+  const bytes = fitPayload(long);
+  expect(bytes.length).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES);
+  const out = JSON.parse(new TextDecoder().decode(bytes));
+  expect(out.url).toBe(long.url);
+  expect(out.body.endsWith("…")).toBe(true);
+  expect(out.title).toBe(long.title);
+  const short = { title: "T", body: "B" };
+  expect(new TextDecoder().decode(fitPayload(short))).toBe(JSON.stringify(short));
 });
