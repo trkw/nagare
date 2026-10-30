@@ -25,7 +25,9 @@ export function looksJapanese(text: string): boolean {
 const BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, blockquote, figcaption, td, th, dt, dd";
 const SKIP = new Set(["SCRIPT", "STYLE", "PRE", "CODE"]);
 
-type TextNode = { data: string; parentElement: Element | null };
+type ParentEl = { tagName: string; parentElement: ParentEl | null };
+type TextNode = { data: string; parentElement: ParentEl | null };
+type TreeNode = { nodeType: number; childNodes: Iterable<TreeNode> };
 
 /**
  * Splits HTML into translatable units for a plain-text model: the text of each innermost
@@ -44,7 +46,7 @@ export function textBlocks(html: string): { texts: string[]; apply: (translated:
     return false;
   };
   const stray: TextNode[] = [];
-  const walk = (node: Node) => {
+  const walk = (node: TreeNode) => {
     for (const child of node.childNodes) {
       if (child.nodeType === 3) {
         const t = child as unknown as TextNode;
@@ -54,7 +56,7 @@ export function textBlocks(html: string): { texts: string[]; apply: (translated:
       }
     }
   };
-  walk(document.body as unknown as Node);
+  walk(document.body as unknown as TreeNode);
 
   return {
     texts: [
