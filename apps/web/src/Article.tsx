@@ -11,6 +11,8 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "IMG") node.setAttribute("loading", "lazy");
 });
 
+const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
+
 function plainText(html: string): string {
   const doc = new DOMParser().parseFromString(DOMPurify.sanitize(html), "text/html");
   return doc.body.textContent?.replace(/\s+/g, " ").trim() ?? "";
@@ -31,7 +33,7 @@ export function Article(props: {
   useEffect(() => {
     setHandoffOpen(false);
     return () => {
-      speechSynthesis.cancel();
+      if (canSpeak) speechSynthesis.cancel();
       setSpeaking(false);
     };
   }, [entry.id]);
@@ -64,7 +66,7 @@ export function Article(props: {
         <button onClick={props.onToggleRead} title="既読/未読 (m)">
           {entry.read ? "未読にする" : "既読にする"}
         </button>
-        {"speechSynthesis" in window && <button onClick={toggleSpeech}>{speaking ? "■ 停止" : "▶ 読み上げ"}</button>}
+        {canSpeak && <button onClick={toggleSpeech}>{speaking ? "■ 停止" : "▶ 読み上げ"}</button>}
         <button onClick={() => setHandoffOpen((v) => !v)}>エージェントに送る</button>
         {entry.url && (
           <a className="button" href={entry.url} target="_blank" rel="noopener noreferrer" title="元の記事 (v)">

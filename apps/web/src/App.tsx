@@ -84,6 +84,8 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [selected, setSelected] = useState<Entry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  // Bumped per list request; a response whose number is stale belongs to an old query.
+  const requestSeq = useRef(0);
 
   const refreshFeeds = useCallback(() => api.feeds().then(setFeeds).catch((e: Error) => setError(e.message)), []);
   useEffect(() => {
@@ -100,16 +102,18 @@ function Reader({ me, onLogout }: { me: Me; onLogout: () => void }) {
 
   const load = useCallback(
     async (more: boolean) => {
+      const seq = ++requestSeq.current;
       setLoading(true);
       try {
         const last = more ? entries.at(-1) : undefined;
         const page = await api.entries({ ...query, limit: PAGE, before: last?.published_at, before_id: last?.id });
+        if (seq !== requestSeq.current) return;
         setEntries((prev) => (more ? [...prev, ...page] : page));
         setHasMore(page.length === PAGE);
       } catch (e) {
-        setError((e as Error).message);
+        if (seq === requestSeq.current) setError((e as Error).message);
       } finally {
-        setLoading(false);
+        if (seq === requestSeq.current) setLoading(false);
       }
     },
     [entries, query],

@@ -41,21 +41,24 @@ export type EntryQuery = {
 };
 
 const TOKEN_KEY = "nagare.token";
+// Used when localStorage is blocked: the token then lives only for this page load.
+let memoryToken: string | null = null;
 
 export function getToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY) ?? memoryToken;
   } catch {
-    return null;
+    return memoryToken;
   }
 }
 
 export function setToken(token: string | null): void {
+  memoryToken = token;
   try {
     if (token) localStorage.setItem(TOKEN_KEY, token);
     else localStorage.removeItem(TOKEN_KEY);
   } catch {
-    // Private mode: the token lives only for this page load.
+    // Storage blocked: memoryToken covers this page load.
   }
 }
 
